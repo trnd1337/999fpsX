@@ -1,4 +1,4 @@
-# 999fpsx — CPU Tuner and Power Plan Manager 🐣⚙️
+# 999fpsX — CPU Tuner and Power Plan Manager 🐣⚙️
 
 A tiny, friendly Windows app (EXE) for safe CPU tuning, live telemetry, and power‑plan management. Dark theme, profiles, optional vendor CLI support, and a rollback safety timer so you can experiment without fear.
 
