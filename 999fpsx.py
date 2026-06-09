@@ -18,7 +18,7 @@ try:
 except Exception:
     _wmi = None
 
-APP_TITLE = "999fpsx"
+APP_TITLE = "999fpsX"
 LOGFILE = Path("999fpsx.log")
 LOCAL_PROFILES_DIR = Path("profiles")
 USER_APP_DIR = Path(os.getenv("APPDATA") or Path.home() / ".config") / "999fpsx"
