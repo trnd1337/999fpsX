@@ -1,20 +1,3 @@
-# 999fpsx.py
-"""
-999fpsx - GUI with vendor CLI integration (AMD) and extended settings.
-Now with full auto-save + auto-load of last session, and forced Windows
-fallback backend for applying profiles (even on AMD/Intel).
-
-Features:
-- Telemetry (freq, temp, load)
-- Windows power plan import/export and rename
-- Profiles (JSON) with optional .pow export
-- Auto-import .pow on startup
-- Vendor CLI integration (AMD Ryzen Master CLI detection + custom command template)
-- Extra settings: PL1/PL2 fields, PBO attempt toggle
-- Dark theme and icon
-- Full auto-save on exit and auto-load on startup (last_session.json)
-"""
-
 import sys
 import os
 import subprocess
