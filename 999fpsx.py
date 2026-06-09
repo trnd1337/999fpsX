@@ -18,17 +18,19 @@ try:
 except Exception:
     _wmi = None
 
-APP_TITLE = "999fpsX"
+APP_TITLE = "999fpsX - CPU Performance Tuner"
 LOGFILE = Path("999fpsx.log")
 LOCAL_PROFILES_DIR = Path("profiles")
 USER_APP_DIR = Path(os.getenv("APPDATA") or Path.home() / ".config") / "999fpsx"
 USER_PROFILES_DIR = USER_APP_DIR / "profiles"
 USER_PROFILES_DIR.mkdir(parents=True, exist_ok=True)
 
+LAST_SESSION_FILE = USER_APP_DIR / "last_session.json"
+
 ICON_FILENAME = Path("icon.png")
 AUTO_ELEVATE = False
 
-# Default auto-import plan settings (user provided)
+# Default auto-import plan settings
 DEFAULT_AUTO_IMPORT_GUID = "8acb232b-aa83-4027-a633-5f1c6bb71308"
 DEFAULT_POW_FILENAME = "999fps.pow"
 
@@ -178,7 +180,6 @@ class WindowsFallbackBackend(BackendBase):
                 return parts[1].strip().split()[0]
         return None
 
-# Minimal AMD/Intel stubs; vendor CLI integration handled separately
 class AmdBackend(BackendBase):
     def available(self):
         return True
@@ -277,7 +278,7 @@ class MainWindow(QtWidgets.QMainWindow):
         self.history = {"freq": [], "temp": [], "load": []}
         self.max_history = 300
 
-        # Editable settings (persisted in profiles)
+        # Editable settings (persisted in profiles and last_session)
         self.settings = {
             "thermal_cutoff": float(self.thermal_limit),
             "disable_core_parking": False,
@@ -297,15 +298,20 @@ class MainWindow(QtWidgets.QMainWindow):
             "vendor_profile_name": "",
             "vendor_command_template": "{cli} -a ApplyProfile \"{profile}\"",
             "attempt_pbo": False,
-            # Extra power fields (informational; applied only via vendor CLI if supported)
+            # Extra power fields
             "pl1_watts": 0,
-            "pl2_watts": 0
+            "pl2_watts": 0,
+            # Rollback
+            "rollback_seconds": 20
         }
+
+        # Load last session (auto-load)
+        self._load_last_session()
 
         self.setWindowTitle(APP_TITLE)
         self.setGeometry(200, 200, 1100, 700)
 
-        # load icon if present (defer to runtime)
+        # icon
         icon_path = get_resource_path("icon.png")
         if icon_path.exists():
             pix = QtGui.QPixmap(str(icon_path))
@@ -339,13 +345,41 @@ class MainWindow(QtWidgets.QMainWindow):
         self.rollback_timer = QtCore.QTimer()
         self.rollback_timer.setSingleShot(True)
         self.rollback_timer.timeout.connect(self._on_rollback_timeout)
-        self.rollback_seconds = 20
+        self.rollback_seconds = int(self.settings.get("rollback_seconds", 20))
 
         self.init_ui()
         self.apply_dark_theme()
         self.telemetry_thread.start()
 
         QtCore.QTimer.singleShot(500, self._maybe_auto_import_on_startup)
+
+    # -------------------------
+    # Auto-save / auto-load
+    # -------------------------
+    def _load_last_session(self):
+        try:
+            if LAST_SESSION_FILE.exists():
+                with open(LAST_SESSION_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                saved_settings = data.get("settings", {})
+                for k, v in saved_settings.items():
+                    self.settings[k] = v
+                log("Loaded last_session.json")
+        except Exception as e:
+            log(f"Failed to load last_session.json: {e}")
+
+    def _save_last_session(self):
+        try:
+            USER_APP_DIR.mkdir(parents=True, exist_ok=True)
+            data = {
+                "settings": self.settings,
+                "timestamp": datetime.now().isoformat()
+            }
+            with open(LAST_SESSION_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            log("Saved last_session.json")
+        except Exception as e:
+            log(f"Failed to save last_session.json: {e}")
 
     # -------------------------
     # UI
@@ -444,12 +478,11 @@ class MainWindow(QtWidgets.QMainWindow):
         self.affinity_combo.currentTextChanged.connect(lambda t: self.on_setting_change("affinity_mode", t))
         s_layout.addRow("Affinity mode", self.affinity_combo)
 
-        self.affinity_mask_edit = QtWidgets.QLineEdit("0x0")
+        self.affinity_mask_edit = QtWidgets.QLineEdit(hex(int(self.settings.get("custom_affinity_mask", 0))))
         self.affinity_mask_edit.setToolTip("Hex mask of logical cores, e.g., 0xF for first 4 cores")
         self.affinity_mask_edit.editingFinished.connect(self._on_affinity_mask_changed)
         s_layout.addRow("Custom affinity mask", self.affinity_mask_edit)
 
-        # Extra power fields
         self.pl1_spin = QtWidgets.QSpinBox()
         self.pl1_spin.setRange(0, 1000)
         self.pl1_spin.setValue(int(self.settings.get("pl1_watts", 0)))
@@ -471,7 +504,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
         self.rollback_spin = QtWidgets.QSpinBox()
         self.rollback_spin.setRange(5, 300)
-        self.rollback_spin.setValue(self.rollback_seconds)
+        self.rollback_spin.setValue(int(self.settings.get("rollback_seconds", 20)))
         self.rollback_spin.setSuffix(" s")
         self.rollback_spin.valueChanged.connect(self._on_rollback_changed)
         s_layout.addRow("Rollback window", self.rollback_spin)
@@ -524,7 +557,7 @@ class MainWindow(QtWidgets.QMainWindow):
         # Profiles
         profile_group = QtWidgets.QGroupBox("Profiles")
         p_layout = QtWidgets.QHBoxLayout()
-        self.profile_name = QtWidgets.QLineEdit(self.settings["profile_name"])
+        self.profile_name = QtWidgets.QLineEdit(self.settings.get("profile_name", "custom"))
         p_layout.addWidget(self.profile_name)
         self.include_powerplan_chk = QtWidgets.QCheckBox("Include power plan (.pow) with profile")
         self.include_powerplan_chk.setChecked(False)
@@ -615,7 +648,7 @@ class MainWindow(QtWidgets.QMainWindow):
         main_layout.addWidget(splitter)
         central.setLayout(main_layout)
         self.setCentralWidget(central)
-        self.append_log("App started")
+        self.append_log("App started (auto-load applied if available)")
 
     # -------------------------
     # UI helpers and settings
@@ -642,10 +675,13 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _on_rollback_changed(self, v):
         self.rollback_seconds = int(v)
+        self.on_setting_change("rollback_seconds", self.rollback_seconds)
         self.append_log(f"Rollback window set to {self.rollback_seconds} s")
 
     def on_setting_change(self, key, value):
         self.settings[key] = value
+        if key == "profile_name":
+            pass
         self.append_log(f"Setting changed: {key} = {value}")
         if key == "telemetry_interval":
             try:
@@ -737,7 +773,6 @@ class MainWindow(QtWidgets.QMainWindow):
             self.status.setText("Status Boost Active")
             self.rollback_timer.start(self.rollback_seconds * 1000)
             self.append_log(f"Rollback timer started for {self.rollback_seconds} seconds")
-            # If vendor CLI present and user requested PBO or PL changes, attempt vendor commands
             if self.settings.get("vendor_cli_path"):
                 if self.settings.get("attempt_pbo") or self.settings.get("pl1_watts") or self.settings.get("pl2_watts"):
                     self.append_log("Attempting vendor CLI adjustments (PBO/PL)")
@@ -958,12 +993,9 @@ class MainWindow(QtWidgets.QMainWindow):
             self.append_log("Vendor CLI path invalid")
             QtWidgets.QMessageBox.warning(self, "Vendor CLI", "Vendor CLI executable not found")
             return
-        # Default AMD attempt: [cli, "-a", "ApplyProfile", profile]
         try:
-            # If user provided a template, use it; otherwise use default AMD args
             if template and "{cli}" in template:
                 cmd_str = template.replace("{cli}", cli).replace("{profile}", profile)
-                # split safely (simple split; user should provide simple templates)
                 parts = cmd_str.split()
                 code, out, err = run_cmd(parts)
             else:
@@ -985,16 +1017,13 @@ class MainWindow(QtWidgets.QMainWindow):
             self.append_log("Vendor CLI path invalid for revert")
             QtWidgets.QMessageBox.warning(self, "Vendor CLI", "Vendor CLI executable not found")
             return
-        # Attempt a generic revert/reset command; vendor CLIs differ so this is best-effort
         try:
-            # Try common reset args for AMD CLI
             args = [cli, "-a", "ResetProfile"]
             code, out, err = run_cmd(args)
             if code == 0:
                 self.append_log("Vendor profile reverted (ResetProfile)")
                 QtWidgets.QMessageBox.information(self, "Vendor", "Vendor profile reverted")
                 return
-            # fallback: try without args
             code2, out2, err2 = run_cmd([cli])
             self.append_log(f"Vendor revert fallback: {code2} {out2 or err2}")
             QtWidgets.QMessageBox.information(self, "Vendor", "Vendor revert attempted; check logs")
@@ -1010,15 +1039,12 @@ class MainWindow(QtWidgets.QMainWindow):
         pl1 = int(self.settings.get("pl1_watts", 0) or 0)
         pl2 = int(self.settings.get("pl2_watts", 0) or 0)
         template = self.vendor_template_edit.text().strip() or self.settings.get("vendor_command_template", "")
-        # This is best-effort: many vendor CLIs have different flags for PL1/PL2
-        # We attempt a simple template replacement if user provided a template that supports {pl1} {pl2}
         if "{pl1}" in template or "{pl2}" in template:
             cmd_str = template.replace("{cli}", cli).replace("{pl1}", str(pl1)).replace("{pl2}", str(pl2)).replace("{profile}", self.vendor_profile_edit.text().strip())
             parts = cmd_str.split()
             code, out, err = run_cmd(parts)
             self.append_log(f"Vendor PL command executed: {code} {out or err}")
         else:
-            # No template; log and skip
             self.append_log("No vendor command template for PL1/PL2 provided; skipping PL application")
 
     # -------------------------
@@ -1029,7 +1055,7 @@ class MainWindow(QtWidgets.QMainWindow):
         if not name:
             self.append_log("Profile name required")
             return
-        # include current settings snapshot
+        self.on_setting_change("profile_name", name)
         data = {"settings": self.settings.copy(), "timestamp": datetime.now().isoformat()}
         self.pmgr.save(name, data)
         if self.include_powerplan_chk.isChecked():
@@ -1061,16 +1087,49 @@ class MainWindow(QtWidgets.QMainWindow):
         self.affinity_combo.setCurrentText(self.settings.get("affinity_mode", "all"))
         self.affinity_mask_edit.setText(hex(int(self.settings.get("custom_affinity_mask", 0))))
         self.profile_name.setText(name)
-        # vendor fields
         self.vendor_cli_edit.setText(self.settings.get("vendor_cli_path", ""))
         self.vendor_profile_edit.setText(self.settings.get("vendor_profile_name", ""))
         self.vendor_template_edit.setText(self.settings.get("vendor_command_template", ""))
         self.pl1_spin.setValue(int(self.settings.get("pl1_watts", 0)))
         self.pl2_spin.setValue(int(self.settings.get("pl2_watts", 0)))
         self.pbo_chk.setChecked(bool(self.settings.get("attempt_pbo", False)))
+        self.rollback_spin.setValue(int(self.settings.get("rollback_seconds", 20)))
         self.append_log(f"Profile {name} loaded")
 
     def closeEvent(self, event):
+        try:
+            # sync UI back into settings before saving
+            self.settings["thermal_cutoff"] = float(self.thermal_spin.value())
+            self.settings["disable_core_parking"] = bool(self.park_chk.isChecked())
+            self.settings["max_processor_state_ac"] = int(self.max_ac_spin.value())
+            self.settings["max_processor_state_dc"] = int(self.max_dc_spin.value())
+            self.settings["telemetry_interval"] = float(self.telemetry_spin.value())
+            self.settings["affinity_mode"] = self.affinity_combo.currentText()
+            try:
+                txt = self.affinity_mask_edit.text().strip()
+                if txt.lower().startswith("0x"):
+                    mask = int(txt, 16)
+                else:
+                    mask = int(txt)
+                self.settings["custom_affinity_mask"] = mask
+            except Exception:
+                pass
+            self.settings["pl1_watts"] = int(self.pl1_spin.value())
+            self.settings["pl2_watts"] = int(self.pl2_spin.value())
+            self.settings["attempt_pbo"] = bool(self.pbo_chk.isChecked())
+            self.settings["rollback_seconds"] = int(self.rollback_spin.value())
+            self.settings["vendor_cli_path"] = self.vendor_cli_edit.text().strip()
+            self.settings["vendor_profile_name"] = self.vendor_profile_edit.text().strip()
+            self.settings["vendor_command_template"] = self.vendor_template_edit.text().strip()
+            self.settings["auto_import_plan"] = bool(self.auto_import_chk.isChecked())
+            self.settings["auto_import_activate"] = bool(self.auto_activate_chk.isChecked())
+            self.settings["auto_import_path"] = self.auto_path_edit.text().strip()
+            self.settings["profile_name"] = self.profile_name.text().strip() or "custom"
+
+            self._save_last_session()
+        except Exception as e:
+            self.append_log(f"Error during auto-save on exit: {e}")
+
         try:
             self.telemetry_thread.stop()
             self.telemetry_thread.wait(1000)
@@ -1084,13 +1143,11 @@ class MainWindow(QtWidgets.QMainWindow):
 # Main
 # -------------------------
 def main():
-    # Set Qt attributes before creating QApplication to avoid the AA_EnableHighDpiScaling error
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_EnableHighDpiScaling, True)
     QtWidgets.QApplication.setAttribute(QtCore.Qt.AA_UseHighDpiPixmaps, True)
 
     app = QtWidgets.QApplication(sys.argv)
 
-    # Ensure user profiles dir exists and copy bundled defaults if any
     ensure_default_profiles_copied()
 
     w = MainWindow()
